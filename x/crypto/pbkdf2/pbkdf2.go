@@ -21,7 +21,6 @@ package pbkdf2
 import (
 	"crypto/hmac"
 	"hash"
-	"math/big"
 )
 
 // Key derives a key from the password, salt and iteration count, returning a
@@ -40,14 +39,13 @@ import (
 //
 // Using a higher iteration count will increase the cost of an exhaustive
 // search but will also make derivation proportionally slower.
-func Key(password, salt []byte, iter int, keyLen int, h func() hash.Hash) []byte {
-	i := big.NewInt(int64(iter))
-	return KeyBigIter(password, salt, i, keyLen, h)
+func Key(password, salt []byte, iter, keyLen int, h func() hash.Hash) []byte {
+	return Key64(password, salt, int64(iter), int64(keyLen), h)
 }
 
-// KeyBigIter derives a key from the password, salt and iteration count
-// (as an arbitrary-precision arithmetic *big.Int), returning a []byte of
-// length keylen that can be used as cryptographic key.
+// Key64 derives a key from the password, salt and iteration count, returning a
+// []byte of length keylen that can be used as cryptographic key. Key64 uses
+// int64 for the iteration count and key length to allow larger values.
 // The key is derived based on the method described as PBKDF2 with the HMAC
 // variant using the supplied hash function.
 //
@@ -62,15 +60,15 @@ func Key(password, salt []byte, iter int, keyLen int, h func() hash.Hash) []byte
 //
 // Using a higher iteration count will increase the cost of an exhaustive
 // search but will also make derivation proportionally slower.
-func KeyBigIter(password, salt []byte, iter *big.Int, keyLen int, h func() hash.Hash) []byte {
+func Key64(password, salt []byte, iter, keyLen int64, h func() hash.Hash) []byte {
 	prf := hmac.New(h, password)
-	hashLen := prf.Size()
+	hashLen := int64(prf.Size())
 	numBlocks := (keyLen + hashLen - 1) / hashLen
 
 	var buf [4]byte
 	dk := make([]byte, 0, numBlocks*hashLen)
 	U := make([]byte, hashLen)
-	for block := 1; block <= numBlocks; block++ {
+	for block := int64(1); block <= numBlocks; block++ {
 		// N.B.: || means concatenation, ^ means XOR
 		// for each block T_i = U_1 ^ U_2 ^ ... ^ U_iter
 		// U_1 = PRF(password, salt || uint(i))
@@ -82,14 +80,11 @@ func KeyBigIter(password, salt []byte, iter *big.Int, keyLen int, h func() hash.
 		buf[3] = byte(block)
 		prf.Write(buf[:4])
 		dk = prf.Sum(dk)
-		T := dk[len(dk)-hashLen:]
+		T := dk[int64(len(dk))-hashLen:]
 		copy(U, T)
 
 		// U_n = PRF(password, U_(n-1))
-		i := big.NewInt(1)
-		n := big.NewInt(1)
-		for iter.Cmp(n) == 1 {
-			//for n := 2; n <= iter; n++ {
+		for n := int64(2); n <= iter; n++ {
 			prf.Reset()
 			prf.Write(U)
 			U = U[:0]
@@ -97,7 +92,6 @@ func KeyBigIter(password, salt []byte, iter *big.Int, keyLen int, h func() hash.
 			for x := range U {
 				T[x] ^= U[x]
 			}
-			n.Add(n, i)
 		}
 	}
 	return dk[:keyLen]
