@@ -6,7 +6,9 @@ package asn1
 
 import (
 	"bytes"
+	"encoding/hex"
 	"fmt"
+	"math"
 	"math/big"
 	"reflect"
 	"strings"
@@ -132,9 +134,13 @@ func TestParseBigInt(t *testing.T) {
 			if ret.String() != test.base10 {
 				t.Errorf("#%d: bad result from %x, got %s want %s", i, test.in, ret.String(), test.base10)
 			}
-			fw := newForkableWriter()
-			marshalBigInt(fw, ret)
-			result := fw.Bytes()
+			e, err := makeBigInt(ret)
+			if err != nil {
+				t.Errorf("%d: err=%q", i, err)
+				continue
+			}
+			result := make([]byte, e.Len())
+			e.Encode(result)
 			if !bytes.Equal(result, test.in) {
 				t.Errorf("#%d: got %x from marshaling %s, want %x", i, result, ret, test.in)
 			}
@@ -222,7 +228,7 @@ func TestBitStringRightAlign(t *testing.T) {
 type objectIdentifierTest struct {
 	in  []byte
 	ok  bool
-	out []int
+	out ObjectIdentifier // has base type[]int
 }
 
 var objectIdentifierTestData = []objectIdentifierTest{
@@ -382,6 +388,8 @@ var tagAndLengthData = []tagAndLengthTest{
 	{[]byte{0xa0, 0x81, 0x7f}, false, tagAndLength{}},
 	// Tag numbers which would overflow int32 are rejected. (The value below is 2^31.)
 	{[]byte{0x1f, 0x88, 0x80, 0x80, 0x80, 0x00, 0x00}, false, tagAndLength{}},
+	// Tag numbers that fit in an int32 are valid. (The value below is 2^31 - 1.)
+	{[]byte{0x1f, 0x87, 0xFF, 0xFF, 0xFF, 0x7F, 0x00}, true, tagAndLength{tag: math.MaxInt32}},
 	// Long tag number form may not be used for tags that fit in short form.
 	{[]byte{0x1f, 0x1e, 0x00}, false, tagAndLength{}},
 }
@@ -417,14 +425,16 @@ var parseFieldParametersTestData []parseFieldParametersTest = []parseFieldParame
 	{"generalized", fieldParameters{timeType: TagGeneralizedTime}},
 	{"utc", fieldParameters{timeType: TagUTCTime}},
 	{"printable", fieldParameters{stringType: TagPrintableString}},
+	{"numeric", fieldParameters{stringType: TagNumericString}},
 	{"optional", fieldParameters{optional: true}},
 	{"explicit", fieldParameters{explicit: true, tag: new(int)}},
 	{"application", fieldParameters{application: true, tag: new(int)}},
+	{"private", fieldParameters{private: true, tag: new(int)}},
 	{"optional,explicit", fieldParameters{optional: true, explicit: true, tag: new(int)}},
 	{"default:42", fieldParameters{defaultValue: newInt64(42)}},
 	{"tag:17", fieldParameters{tag: newInt(17)}},
 	{"optional,explicit,default:42,tag:17", fieldParameters{optional: true, explicit: true, defaultValue: newInt64(42), tag: newInt(17)}},
-	{"optional,explicit,default:42,tag:17,rubbish1", fieldParameters{true, true, false, newInt64(42), newInt(17), 0, 0, false, false}},
+	{"optional,explicit,default:42,tag:17,rubbish1", fieldParameters{optional: true, explicit: true, application: false, defaultValue: newInt64(42), tag: newInt(17), stringType: 0, timeType: 0, set: false, omitEmpty: false}},
 	{"set", fieldParameters{set: true}},
 }
 
@@ -469,15 +479,18 @@ type TestSet struct {
 
 var unmarshalTestData = []struct {
 	in  []byte
-	out interface{}
+	out any
 }{
 	{[]byte{0x02, 0x01, 0x42}, newInt(0x42)},
+	{[]byte{0x05, 0x00}, &RawValue{0, 5, false, []byte{}, []byte{0x05, 0x00}}},
 	{[]byte{0x30, 0x08, 0x06, 0x06, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d}, &TestObjectIdentifierStruct{[]int{1, 2, 840, 113549}}},
 	{[]byte{0x03, 0x04, 0x06, 0x6e, 0x5d, 0xc0}, &BitString{[]byte{110, 93, 192}, 18}},
 	{[]byte{0x30, 0x09, 0x02, 0x01, 0x01, 0x02, 0x01, 0x02, 0x02, 0x01, 0x03}, &[]int{1, 2, 3}},
 	{[]byte{0x02, 0x01, 0x10}, newInt(16)},
 	{[]byte{0x13, 0x04, 't', 'e', 's', 't'}, newString("test")},
 	{[]byte{0x16, 0x04, 't', 'e', 's', 't'}, newString("test")},
+	// Ampersand is allowed in PrintableString due to mistakes by major CAs.
+	{[]byte{0x13, 0x05, 't', 'e', 's', 't', '&'}, newString("test&")},
 	{[]byte{0x16, 0x04, 't', 'e', 's', 't'}, &RawValue{0, 22, false, []byte("test"), []byte("\x16\x04test")}},
 	{[]byte{0x04, 0x04, 1, 2, 3, 4}, &RawValue{0, 4, false, []byte{1, 2, 3, 4}, []byte{4, 4, 1, 2, 3, 4}}},
 	{[]byte{0x30, 0x03, 0x81, 0x01, 0x01}, &TestContextSpecificTags{1}},
@@ -488,6 +501,7 @@ var unmarshalTestData = []struct {
 	{[]byte{0x30, 0x0b, 0x13, 0x03, 0x66, 0x6f, 0x6f, 0x02, 0x01, 0x22, 0x02, 0x01, 0x33}, &TestElementsAfterString{"foo", 0x22, 0x33}},
 	{[]byte{0x30, 0x05, 0x02, 0x03, 0x12, 0x34, 0x56}, &TestBigInt{big.NewInt(0x123456)}},
 	{[]byte{0x30, 0x0b, 0x31, 0x09, 0x02, 0x01, 0x01, 0x02, 0x01, 0x02, 0x02, 0x01, 0x03}, &TestSet{Ints: []int{1, 2, 3}}},
+	{[]byte{0x12, 0x0b, '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ' '}, newString("0123456789 ")},
 }
 
 func TestUnmarshal(t *testing.T) {
@@ -500,6 +514,29 @@ func TestUnmarshal(t *testing.T) {
 		}
 		if !reflect.DeepEqual(val, test.out) {
 			t.Errorf("#%d:\nhave %#v\nwant %#v", i, val, test.out)
+		}
+	}
+}
+
+func TestUnmarshalWithNilOrNonPointer(t *testing.T) {
+	tests := []struct {
+		b    []byte
+		v    any
+		want string
+	}{
+		{b: []byte{0x05, 0x00}, v: nil, want: "asn1: Unmarshal recipient value is nil"},
+		{b: []byte{0x05, 0x00}, v: RawValue{}, want: "asn1: Unmarshal recipient value is non-pointer asn1.RawValue"},
+		{b: []byte{0x05, 0x00}, v: (*RawValue)(nil), want: "asn1: Unmarshal recipient value is nil *asn1.RawValue"},
+	}
+
+	for _, test := range tests {
+		_, err := Unmarshal(test.b, test.v)
+		if err == nil {
+			t.Errorf("Unmarshal expecting error, got nil")
+			continue
+		}
+		if g, w := err.Error(), test.want; g != w {
+			t.Errorf("InvalidUnmarshalError mismatch\nGot:  %q\nWant: %q", g, w)
 		}
 	}
 }
@@ -530,7 +567,7 @@ type RelativeDistinguishedNameSET []AttributeTypeAndValue
 
 type AttributeTypeAndValue struct {
 	Type  ObjectIdentifier
-	Value interface{}
+	Value any
 }
 
 type Validity struct {
@@ -961,13 +998,169 @@ func TestUnmarshalInvalidUTF8(t *testing.T) {
 }
 
 func TestMarshalNilValue(t *testing.T) {
-	nilValueTestData := []interface{}{
+	nilValueTestData := []any{
 		nil,
-		struct{ v interface{} }{},
+		struct{ V any }{},
 	}
 	for i, test := range nilValueTestData {
 		if _, err := Marshal(test); err == nil {
 			t.Fatalf("#%d: successfully marshaled nil value", i)
 		}
+	}
+}
+
+type unexported struct {
+	X int
+	y int
+}
+
+type exported struct {
+	X int
+	Y int
+}
+
+func TestUnexportedStructField(t *testing.T) {
+	want := StructuralError{"struct contains unexported fields"}
+
+	_, err := Marshal(unexported{X: 5, y: 1})
+	if err != want {
+		t.Errorf("got %v, want %v", err, want)
+	}
+
+	bs, err := Marshal(exported{X: 5, Y: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var u unexported
+	_, err = Unmarshal(bs, &u)
+	if err != want {
+		t.Errorf("got %v, want %v", err, want)
+	}
+}
+
+func TestNull(t *testing.T) {
+	marshaled, err := Marshal(NullRawValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(NullBytes, marshaled) {
+		t.Errorf("Expected Marshal of NullRawValue to yield %x, got %x", NullBytes, marshaled)
+	}
+
+	unmarshaled := RawValue{}
+	if _, err := Unmarshal(NullBytes, &unmarshaled); err != nil {
+		t.Fatal(err)
+	}
+
+	unmarshaled.FullBytes = NullRawValue.FullBytes
+	if len(unmarshaled.Bytes) == 0 {
+		// DeepEqual considers a nil slice and an empty slice to be different.
+		unmarshaled.Bytes = NullRawValue.Bytes
+	}
+
+	if !reflect.DeepEqual(NullRawValue, unmarshaled) {
+		t.Errorf("Expected Unmarshal of NullBytes to yield %v, got %v", NullRawValue, unmarshaled)
+	}
+}
+
+func TestExplicitTagRawValueStruct(t *testing.T) {
+	type foo struct {
+		A RawValue `asn1:"optional,explicit,tag:5"`
+		B []byte   `asn1:"optional,explicit,tag:6"`
+	}
+	before := foo{B: []byte{1, 2, 3}}
+	derBytes, err := Marshal(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var after foo
+	if rest, err := Unmarshal(derBytes, &after); err != nil || len(rest) != 0 {
+		t.Fatal(err)
+	}
+
+	got := fmt.Sprintf("%#v", after)
+	want := fmt.Sprintf("%#v", before)
+	if got != want {
+		t.Errorf("got %s, want %s (DER: %x)", got, want, derBytes)
+	}
+}
+
+func TestTaggedRawValue(t *testing.T) {
+	type taggedRawValue struct {
+		A RawValue `asn1:"tag:5"`
+	}
+	type untaggedRawValue struct {
+		A RawValue
+	}
+	const isCompound = 0x20
+	const tag = 5
+
+	tests := []struct {
+		shouldMatch bool
+		derBytes    []byte
+	}{
+		{false, []byte{0x30, 3, TagInteger, 1, 1}},
+		{true, []byte{0x30, 3, (ClassContextSpecific << 6) | tag, 1, 1}},
+		{true, []byte{0x30, 3, (ClassContextSpecific << 6) | tag | isCompound, 1, 1}},
+		{false, []byte{0x30, 3, (ClassApplication << 6) | tag | isCompound, 1, 1}},
+		{false, []byte{0x30, 3, (ClassPrivate << 6) | tag | isCompound, 1, 1}},
+	}
+
+	for i, test := range tests {
+		var tagged taggedRawValue
+		if _, err := Unmarshal(test.derBytes, &tagged); (err == nil) != test.shouldMatch {
+			t.Errorf("#%d: unexpected result parsing %x: %s", i, test.derBytes, err)
+		}
+
+		// An untagged RawValue should accept anything.
+		var untagged untaggedRawValue
+		if _, err := Unmarshal(test.derBytes, &untagged); err != nil {
+			t.Errorf("#%d: unexpected failure parsing %x with untagged RawValue: %s", i, test.derBytes, err)
+		}
+	}
+}
+
+var bmpStringTests = []struct {
+	decoded    string
+	encodedHex string
+}{
+	{"", "0000"},
+	// Example from https://tools.ietf.org/html/rfc7292#appendix-B.
+	{"Beavis", "0042006500610076006900730000"},
+	// Some characters from the "Letterlike Symbols Unicode block".
+	{"\u2115 - Double-struck N", "21150020002d00200044006f00750062006c0065002d00730074007200750063006b0020004e0000"},
+}
+
+func TestBMPString(t *testing.T) {
+	for i, test := range bmpStringTests {
+		encoded, err := hex.DecodeString(test.encodedHex)
+		if err != nil {
+			t.Fatalf("#%d: failed to decode from hex string", i)
+		}
+
+		decoded, err := parseBMPString(encoded)
+
+		if err != nil {
+			t.Errorf("#%d: decoding output gave an error: %s", i, err)
+			continue
+		}
+
+		if decoded != test.decoded {
+			t.Errorf("#%d: decoding output resulted in %q, but it should have been %q", i, decoded, test.decoded)
+			continue
+		}
+	}
+}
+
+func TestNonMinimalEncodedOID(t *testing.T) {
+	h, err := hex.DecodeString("060a2a80864886f70d01010b")
+	if err != nil {
+		t.Fatalf("failed to decode from hex string: %s", err)
+	}
+	var oid ObjectIdentifier
+	_, err = Unmarshal(h, &oid)
+	if err == nil {
+		t.Fatalf("accepted non-minimally encoded oid")
 	}
 }
