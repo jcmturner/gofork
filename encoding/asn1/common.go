@@ -94,7 +94,14 @@ type fieldParameters struct {
 func parseFieldParameters(str string) (ret fieldParameters) {
 	var part string
 	for len(str) > 0 {
-		part, str, _ = strings.Cut(str, ",")
+		// This loop uses IndexByte and explicit slicing
+		// instead of strings.Split(str, ",") to reduce allocations.
+		i := strings.IndexByte(str, ',')
+		if i < 0 {
+			part, str = str, ""
+		} else {
+			part, str = str[:i], str[i+1:]
+		}
 		switch {
 		case part == "optional":
 			ret.optional = true
@@ -109,9 +116,6 @@ func parseFieldParameters(str string) (ret fieldParameters) {
 			ret.timeType = TagUTCTime
 		case part == "ia5":
 			ret.stringType = TagIA5String
-		// jtasn1 case below added
-		case part == "generalstring":
-			ret.stringType = TagGeneralString
 		case part == "printable":
 			ret.stringType = TagPrintableString
 		case part == "numeric":

@@ -488,7 +488,7 @@ func makeBody(value reflect.Value, params fieldParameters) (e encoder, err error
 		t := v.Type()
 
 		for i := 0; i < t.NumField(); i++ {
-			if !t.Field(i).IsExported() {
+			if t.Field(i).PkgPath != "" {
 				return nil, StructuralError{"struct contains unexported fields"}
 			}
 		}
@@ -548,12 +548,8 @@ func makeBody(value reflect.Value, params fieldParameters) (e encoder, err error
 		default:
 			m := make([]encoder, l)
 
-			// jtasn1 Pass on the tags to the members but need to unset explicit switch and implicit value
-			params.explicit = false
-			params.tag = nil
-
 			for i := 0; i < l; i++ {
-				m[i], err = makeField(v.Index(i), params)
+				m[i], err = makeField(v.Index(i), fp)
 				if err != nil {
 					return nil, err
 				}
@@ -634,8 +630,7 @@ func makeField(v reflect.Value, params fieldParameters) (e encoder, err error) {
 		return nil, StructuralError{"explicit time type given to non-time member"}
 	}
 
-	// jtasn1 updated to allow slices of strings
-	if params.stringType != 0 && !(tag == TagPrintableString || (v.Kind() == reflect.Slice && tag == 16 && v.Type().Elem().Kind() == reflect.String)) {
+	if params.stringType != 0 && tag != TagPrintableString {
 		return nil, StructuralError{"explicit string type given to non-string member"}
 	}
 
@@ -735,13 +730,13 @@ func makeField(v reflect.Value, params fieldParameters) (e encoder, err error) {
 //	utf8:        causes strings to be marshaled as ASN.1, UTF8String values
 //	utc:         causes time.Time to be marshaled as ASN.1, UTCTime values
 //	generalized: causes time.Time to be marshaled as ASN.1, GeneralizedTime values
-func Marshal(val any) ([]byte, error) {
+func Marshal(val interface{}) ([]byte, error) {
 	return MarshalWithParams(val, "")
 }
 
 // MarshalWithParams allows field parameters to be specified for the
 // top-level element. The form of the params is the same as the field tags.
-func MarshalWithParams(val any, params string) ([]byte, error) {
+func MarshalWithParams(val interface{}, params string) ([]byte, error) {
 	e, err := makeField(reflect.ValueOf(val), parseFieldParameters(params))
 	if err != nil {
 		return nil, err
