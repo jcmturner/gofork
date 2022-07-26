@@ -103,6 +103,9 @@ func parseFieldParameters(str string) (ret fieldParameters) {
 			ret.timeType = TagUTCTime
 		case part == "ia5":
 			ret.stringType = TagIA5String
+		// jtasn1 case below added
+		case part == "generalstring":
+			ret.stringType = TagGeneralString
 		case part == "printable":
 			ret.stringType = TagPrintableString
 		case part == "utf8":

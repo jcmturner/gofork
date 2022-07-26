@@ -636,6 +636,9 @@ func parseField(v reflect.Value, bytes []byte, initOffset int, params fieldParam
 				result, err = parsePrintableString(innerBytes)
 			case TagIA5String:
 				result, err = parseIA5String(innerBytes)
+			// jtasn1 addition of following case
+			case TagGeneralString:
+				result, err = parseIA5String(innerBytes)
 			case TagT61String:
 				result, err = parseT61String(innerBytes)
 			case TagUTF8String:
