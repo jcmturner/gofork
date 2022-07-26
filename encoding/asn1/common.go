@@ -24,20 +24,17 @@ const (
 	TagInteger         = 2
 	TagBitString       = 3
 	TagOctetString     = 4
-	TagNull            = 5
 	TagOID             = 6
 	TagEnum            = 10
 	TagUTF8String      = 12
 	TagSequence        = 16
 	TagSet             = 17
-	TagNumericString   = 18
 	TagPrintableString = 19
 	TagT61String       = 20
 	TagIA5String       = 22
 	TagUTCTime         = 23
 	TagGeneralizedTime = 24
 	TagGeneralString   = 27
-	TagBMPString       = 30
 )
 
 // ASN.1 class types represent the namespace of the tag.
@@ -76,7 +73,6 @@ type fieldParameters struct {
 	optional     bool   // true iff the field is OPTIONAL
 	explicit     bool   // true iff an EXPLICIT tag is in use.
 	application  bool   // true iff an APPLICATION tag is in use.
-	private      bool   // true iff a PRIVATE tag is in use.
 	defaultValue *int64 // a default value for INTEGER typed fields (maybe nil).
 	tag          *int   // the EXPLICIT or IMPLICIT tag (maybe nil).
 	stringType   int    // the string tag to use when marshaling.
@@ -92,16 +88,7 @@ type fieldParameters struct {
 // parseFieldParameters will parse it into a fieldParameters structure,
 // ignoring unknown parts of the string.
 func parseFieldParameters(str string) (ret fieldParameters) {
-	var part string
-	for len(str) > 0 {
-		// This loop uses IndexByte and explicit slicing
-		// instead of strings.Split(str, ",") to reduce allocations.
-		i := strings.IndexByte(str, ',')
-		if i < 0 {
-			part, str = str, ""
-		} else {
-			part, str = str[:i], str[i+1:]
-		}
+	for _, part := range strings.Split(str, ",") {
 		switch {
 		case part == "optional":
 			ret.optional = true
@@ -118,8 +105,6 @@ func parseFieldParameters(str string) (ret fieldParameters) {
 			ret.stringType = TagIA5String
 		case part == "printable":
 			ret.stringType = TagPrintableString
-		case part == "numeric":
-			ret.stringType = TagNumericString
 		case part == "utf8":
 			ret.stringType = TagUTF8String
 		case strings.HasPrefix(part, "default:"):
@@ -141,11 +126,6 @@ func parseFieldParameters(str string) (ret fieldParameters) {
 			if ret.tag == nil {
 				ret.tag = new(int)
 			}
-		case part == "private":
-			ret.private = true
-			if ret.tag == nil {
-				ret.tag = new(int)
-			}
 		case part == "omitempty":
 			ret.omitEmpty = true
 		}
@@ -155,38 +135,36 @@ func parseFieldParameters(str string) (ret fieldParameters) {
 
 // Given a reflected Go type, getUniversalType returns the default tag number
 // and expected compound flag.
-func getUniversalType(t reflect.Type) (matchAny bool, tagNumber int, isCompound, ok bool) {
+func getUniversalType(t reflect.Type) (tagNumber int, isCompound, ok bool) {
 	switch t {
-	case rawValueType:
-		return true, -1, false, true
 	case objectIdentifierType:
-		return false, TagOID, false, true
+		return TagOID, false, true
 	case bitStringType:
-		return false, TagBitString, false, true
+		return TagBitString, false, true
 	case timeType:
-		return false, TagUTCTime, false, true
+		return TagUTCTime, false, true
 	case enumeratedType:
-		return false, TagEnum, false, true
+		return TagEnum, false, true
 	case bigIntType:
-		return false, TagInteger, false, true
+		return TagInteger, false, true
 	}
 	switch t.Kind() {
 	case reflect.Bool:
-		return false, TagBoolean, false, true
+		return TagBoolean, false, true
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return false, TagInteger, false, true
+		return TagInteger, false, true
 	case reflect.Struct:
-		return false, TagSequence, true, true
+		return TagSequence, true, true
 	case reflect.Slice:
 		if t.Elem().Kind() == reflect.Uint8 {
-			return false, TagOctetString, false, true
+			return TagOctetString, false, true
 		}
 		if strings.HasSuffix(t.Name(), "SET") {
-			return false, TagSet, true, true
+			return TagSet, true, true
 		}
-		return false, TagSequence, true, true
+		return TagSequence, true, true
 	case reflect.String:
-		return false, TagPrintableString, false, true
+		return TagPrintableString, false, true
 	}
-	return false, 0, false, false
+	return 0, false, false
 }
